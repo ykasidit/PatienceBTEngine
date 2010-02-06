@@ -41,28 +41,21 @@
 
 #include <QFile>
 
-PatienceBlueZEngine::PatienceBlueZEngine(MPatineceBTEngineCaller& aCaller, const uint8_t* aSvc_uuid_int):PatienceBTClientEngine(aCaller, aSvc_uuid_int)
-{   
-   QObject::connect(this, SIGNAL(EngineStateChangeSignal(int)),this, SLOT (EngineStateChangeSlot(int)));
-    iThread = NULL;
-    iLiveSocketToDisconnect = 0;
+PatienceBlueZEngine::PatienceBlueZEngine(MPatineceBTEngineCaller& aCaller, const uint8_t* aSvc_uuid_int):PatienceBTThreadedEngine(aCaller, aSvc_uuid_int)
+{
+
 }
 
 PatienceBlueZEngine::~PatienceBlueZEngine()
 {
-    if(iLiveSocketToDisconnect!=0)
-        Disconnect(); //this would stop running rfcomm thread, if not - in some cases user needs to close the mobile phone's bt to unblock this.
 
-    if(iThread && iThread->isRunning())
-        iThread->wait();
-
-    delete iThread;
 }
 
 
 ///////////search
 
-void PatienceBlueZEngine::CSearchThread::run()
+
+void PatienceBlueZEngine::DoSearch()
 {
     //////////code adapted from http://people.csail.mit.edu/albert/bluez-intro/c404.html
     inquiry_info *ii = NULL;
@@ -72,21 +65,21 @@ void PatienceBlueZEngine::CSearchThread::run()
     char addr[19] = { 0 };
     char name[248] = { 0 };
 
-    emit iFather.EngineStateChangeSignal(EBtSearching);
+    emit EngineStateChangeSignal(EBtSearching);
 
-    emit iFather.EngineStatusMessageSignal("Searching...");
+    emit EngineStatusMessageSignal("Searching...");
 
 
-    iFather.iMutex.lock();
-    iFather.iDevList.clear();//clear list in engine class
-    iFather.iMutex.unlock();
+    iMutex.lock();
+    iDevList.clear();//clear list in engine class
+    iMutex.unlock();
 
     dev_id = hci_get_route(NULL);
     sock = hci_open_dev( dev_id );
     if (dev_id < 0 || sock < 0) {
 
-         emit iFather.EngineStateChangeSignal(EBtIdle);
-         emit iFather.EngineStatusMessageSignal("Open BT socket failed");
+         emit EngineStateChangeSignal(EBtIdle);
+         emit EngineStatusMessageSignal("Open BT socket failed");
         return;
     }
 
@@ -111,37 +104,37 @@ void PatienceBlueZEngine::CSearchThread::run()
         devinfo.iName = name;
         devinfo.iAddrStr = addr;
 
-        iFather.iMutex.lock();
-        iFather.iDevList.append(devinfo);
-        iFather.iMutex.unlock();
+        iMutex.lock();
+        iDevList.append(devinfo);
+        iMutex.unlock();
 
         QString str;
         str.sprintf("Found %s  (%s), Searching...", addr, name);
 
 
-        emit iFather.EngineStatusMessageSignal(str);
+        emit EngineStatusMessageSignal(str);
     }
 
     free( ii );
     close( sock );
 
-    emit iFather.EngineStatusMessageSignal("Search complete...");
+    emit EngineStatusMessageSignal("Search complete...");
 
 
-    emit iFather.EngineStateChangeSignal(EBtSelectingPhoneToSDP);
+    emit EngineStateChangeSignal(EBtSelectingPhoneToSDP);
     ////////////////////////////
 }
 
-void PatienceBlueZEngine::CSDPThread::run()
+void PatienceBlueZEngine::DoSDP()
 {
     perror("entered sdp run");
 
-    emit iFather.EngineStateChangeSignal(EBtSearchingSDP);
-    emit iFather.EngineStatusMessageSignal("Searching device...");
+    emit EngineStateChangeSignal(EBtSearchingSDP);
+    emit EngineStatusMessageSignal("Searching device...");
     int channel = -1;
-    iFather.iMutex.lock();
-    iFather.iRFCOMMChannel = channel; //set to invalid
-    iFather.iMutex.unlock();
+    iMutex.lock();
+    iRFCOMMChannel = channel; //set to invalid
+    iMutex.unlock();
 
             //adjusted from http://people.csail.mit.edu/albert/bluez-intro/x604.html
             uuid_t svc_uuid;
@@ -149,26 +142,26 @@ void PatienceBlueZEngine::CSDPThread::run()
             bdaddr_t target;
 
             perror("copy bdaddr");
-            CopyBDADDR(iFather.iDevList[iFather.iSelectedIndex].iAddr, target.b);
+            CopyBDADDR(iDevList[iSelectedIndex].iAddr, target.b);
             perror("copy bdaddr complete");
 
             sdp_list_t *response_list = NULL, *search_list, *attrid_list;
             sdp_session_t *session = 0;
 
-            emit iFather.EngineStatusMessageSignal("Connect to SDP on remote");
+            emit EngineStatusMessageSignal("Connect to SDP on remote");
             // connect to the SDP server running on the remote machine
             session = sdp_connect( BDADDR_ANY, &target, SDP_RETRY_IF_BUSY );
             if(errno!=0)
             {
             perror("errno not 0 - sdp_connect failed");
-            emit iFather.EngineStatusMessageSignal("Failed to connect to \"previously connected device\"");
-            emit iFather.EngineStateChangeSignal(EBtSearchingSDPDone);
+            emit EngineStatusMessageSignal("Failed to connect to \"previously connected device\"");
+            emit EngineStateChangeSignal(EBtSearchingSDPDone);
             sdp_close(session);
             return;
             }
 
             // specify the UUID of the application we're searching for
-            sdp_uuid128_create( &svc_uuid, iFather.iSvc_uuid_int );
+            sdp_uuid128_create( &svc_uuid, iSvc_uuid_int );
             perror("sdp state 1");
             search_list = sdp_list_append( NULL, &svc_uuid );
             perror("sdp state 2");
@@ -179,12 +172,12 @@ void PatienceBlueZEngine::CSDPThread::run()
             perror("sdp state 3");
 
             // get a list of service records that have UUID 0xabcd
-            emit iFather.EngineStatusMessageSignal("get a list of service records that has our target UUID");
+            emit EngineStatusMessageSignal("get a list of service records that has our target UUID");
             err = sdp_service_search_attr_req( session, search_list, \
                     SDP_ATTR_REQ_RANGE, attrid_list, &response_list);
 
             //parse response
-            emit iFather.EngineStatusMessageSignal("Parsing response");
+            emit EngineStatusMessageSignal("Parsing response");
             sdp_list_t *r = response_list;
 
     // go through each of the service records
@@ -233,15 +226,15 @@ void PatienceBlueZEngine::CSDPThread::run()
     }
 
     sdp_close(session);
-    iFather.iMutex.lock();
-    iFather.iRFCOMMChannel = channel;
-    iFather.iMutex.unlock();
-    emit iFather.EngineStateChangeSignal(EBtSearchingSDPDone);
+    iMutex.lock();
+    iRFCOMMChannel = channel;
+    iMutex.unlock();
+    emit EngineStateChangeSignal(EBtSearchingSDPDone);
 }
 
 
 //adapted from http://people.csail.mit.edu/albert/bluez-intro/x502.html
-void PatienceBlueZEngine::CRFCOMMThread::run()
+void PatienceBlueZEngine::DoRFCOMM()
 {
     const int KReadBuffSize = 100*1024;//100kb buffer
     uint8_t* buf = (uint8_t*) malloc(KReadBuffSize);
@@ -255,28 +248,28 @@ void PatienceBlueZEngine::CRFCOMMThread::run()
     qKJpgFooter.append((const char*)KJpgFooter,2);
 
     memset(&addr,0,sizeof(addr));
-    CopyBDADDR(iFather.iDevList[iFather.iSelectedIndex].iAddr, (uint8_t*) &(addr.rc_bdaddr));
+    CopyBDADDR(iDevList[iSelectedIndex].iAddr, (uint8_t*) &(addr.rc_bdaddr));
 
     //zeromemory()
 
-    emit iFather.EngineStatusMessageSignal("allocating socket");
-    emit iFather.EngineStateChangeSignal(EBtConnectingRFCOMM);
+    emit EngineStatusMessageSignal("allocating socket");
+    emit EngineStateChangeSignal(EBtConnectingRFCOMM);
 
     // allocate a socket
     s = socket(AF_BLUETOOTH, SOCK_STREAM, BTPROTO_RFCOMM);
 
     // set the connection parameters (who to connect to)
     addr.rc_family = AF_BLUETOOTH;
-    iFather.iMutex.lock();
-    addr.rc_channel = (uint8_t) iFather.iRFCOMMChannel; //use the rfcomm channel we got through SDP
-    iFather.iMutex.unlock();
+    iMutex.lock();
+    addr.rc_channel = (uint8_t) iRFCOMMChannel; //use the rfcomm channel we got through SDP
+    iMutex.unlock();
     //str2ba( dest, &addr.rc_bdaddr ); already copied addr above
 
     // connect to server
     socklen_t addrlen = sizeof(addr);
 
-    emit iFather.EngineStatusMessageSignal("Preparing connection...");
-    emit iFather.EngineStateChangeSignal(EBtConnectingRFCOMM);
+    emit EngineStatusMessageSignal("Preparing connection...");
+    emit EngineStateChangeSignal(EBtConnectingRFCOMM);
 
     status = ::connect(s, (__const struct sockaddr *)&addr,addrlen );
 
@@ -285,12 +278,12 @@ void PatienceBlueZEngine::CRFCOMMThread::run()
     doesn't help, first connection still fails since ubuntu 9.10 - same problem when using bt-sendto
     ///test fix "first connect read hangs" on some driver versions - so we disconnect first conn above, wait 2 sec, then connect again
     close(s);
-    emit iFather.EngineStatusMessageSignal("Preparing connection stage 2/3...");
+    emit EngineStatusMessageSignal("Preparing connection stage 2/3...");
     perror("closed s, sleep 2 sec");
     s = socket(AF_BLUETOOTH, SOCK_STREAM, BTPROTO_RFCOMM);
     sleep(2);
     perror("re con s");
-    emit iFather.EngineStatusMessageSignal("Preparing connection stage 3/3...");
+    emit EngineStatusMessageSignal("Preparing connection stage 3/3...");
     status = ::connect(s, (__const struct sockaddr *)&addr,addrlen );
     //////////////
 */
@@ -303,9 +296,9 @@ void PatienceBlueZEngine::CRFCOMMThread::run()
         //sleep(2);
 
         //no need mutex here because the button to disconnect (that would call close on socket handle iLiveSocketToDisconnect) isn't shown yet
-         iFather.iMutex.lock();
-         iFather.iLiveSocketToDisconnect = s;
-         iFather.iMutex.unlock();
+         iMutex.lock();
+         iLiveSocketToDisconnect = s;
+         iMutex.unlock();
 
          //write bdaddr to file as prevdev.bdaddr
           QFile f( "prevdev.bdaddr" );
@@ -318,9 +311,9 @@ void PatienceBlueZEngine::CRFCOMMThread::run()
 
 
 
-    emit iFather.EngineStatusMessageSignal("Connected");
+    emit EngineStatusMessageSignal("Connected");
     perror("presignal state change 0");
-    emit iFather.EngineStateChangeSignal(EBtConnectionActive);
+    emit EngineStateChangeSignal(EBtConnectionActive);
     perror("postsignal state change 0");
 
         int bytes_read;
@@ -337,13 +330,13 @@ void PatienceBlueZEngine::CRFCOMMThread::run()
             if( bytes_read > 0 )
             {
                 QByteArray ba((const char*)buf,bytes_read);
-                emit iFather.RFCOMMDataReceivedSignal(ba);
+                emit RFCOMMDataReceivedSignal(ba);
             }
             else
             {
                 qDebug("readerr %d bytes: %d\n", bytes_read, errno);
-                emit iFather.EngineStatusMessageSignal("Disconnected");
-                emit iFather.EngineStateChangeSignal(EBtDisconnected);
+                emit EngineStatusMessageSignal("Disconnected");
+                emit EngineStateChangeSignal(EBtDisconnected);
                 break;
             }
 
@@ -361,41 +354,17 @@ void PatienceBlueZEngine::CRFCOMMThread::run()
     if( status < 0 )
         {
             qDebug("open socket failed status %d",status);
-            emit iFather.EngineStatusMessageSignal("Connect Failed");
+            emit EngineStatusMessageSignal("Connect Failed");
         }
 
-    emit iFather.EngineStateChangeSignal(EBtIdle);
+    emit EngineStateChangeSignal(EBtIdle);
 
     close(s);
     free(buf);
 
 }
 
-bool PatienceBlueZEngine::StartSearch()
-{
-    if(iThread && iThread->isRunning())
-    {
-        return false;
-    }
-
-    //if comes here measn thread has finished
-    delete iThread;
-
-    iThread = new CSearchThread(*this);
-    iThread->start();
-
-    return true;
-}
-
-
-void PatienceBlueZEngine::GetDevListClone(QList<TBtDevInfo>& aDevList)
-{
-    iMutex.lock();
-    aDevList = iDevList;
-    iMutex.unlock();
-}
-
-void PatienceBlueZEngine::Disconnect()
+void PatienceBlueZEngine::DoDisconnect()
 {
     qDebug("preparing to close socket handle %d",iLiveSocketToDisconnect);
     close(iLiveSocketToDisconnect); //thise would cause the CRFCOMMThread to quit as it's waiting on read
@@ -403,145 +372,3 @@ void PatienceBlueZEngine::Disconnect()
     iLiveSocketToDisconnect = 0;
 }
 
-void PatienceBlueZEngine::StartPrevdev(QByteArray& ba)
-{
-
-    emit EngineStateChangeSignal(PatienceBlueZEngine::EBtSearching); //let the ui prepare to go to sdp state
-    iDevList.clear();
-
-    TBtDevInfo devinfo;
-    CopyBDADDR((uint8_t*)ba.data(),(uint8_t*)devinfo.iAddr);
-
-    iDevList.append(devinfo);
-    iSelectedIndex = 0;
-    StartSDPToSelectedDev(0);
-}
-
-void PatienceBlueZEngine::StartSDPToSelectedDev(int aSelIndex)
-{
-                    iSelectedIndex = aSelIndex;
-                    qDebug("user selected index: %d",aSelIndex);
-                    QString str;
-                    str = iDevList[aSelIndex].iName;
-                    str += " selected, preparing to search for service...";
-                    emit EngineStatusMessageSignal(str);
-
-
-                    //////////////// start sdp search thread
-                    if(iThread && iThread->isRunning())
-                     {
-                        perror("Warning: waiting on scan thread? actually no thread should be active now...");
-                        iThread->wait();
-                        perror("wait thread ended");
-                     }
-
-                    //if comes here measn thread has finished
-                    perror("deleting iThread");
-
-                    delete iThread;
-                    iThread = NULL;
-
-                    iThread = new CSDPThread(*this);
-                    perror("created sdp thread");
-                    iThread->start();
-                    perror("started sdp thread");
-                    emit EngineStateChangeSignal(EBtSearchingSDP);
-                    ////////////////
-
-}
-void PatienceBlueZEngine::EngineStateChangeSlot(int aState)
-{
-    switch(aState)
-    {
-    case PatienceBlueZEngine::EBtIdle:
-        iLiveSocketToDisconnect = 0;
-        break;
-    case PatienceBlueZEngine::EBtSearching:
-        break;
-    case PatienceBlueZEngine::EBtSelectingPhoneToSDP:
-        {
-            if(iDevList.isEmpty())
-            {
-                //QMessageBox::information(iParentWindow, tr("No nearby Bluetooth devices found"),tr("No nearby Bluetooth devices found.\r\n\r\nPlease install or start (if already installed) the mobile program on your phone and try again."));
-
-                emit EngineStatusMessageSignal("No nearby Bluetooth devices found");
-                emit EngineErrorSignal(EInquiryFoundNoDevices);
-                emit EngineStateChangeSignal(EBtIdle);
-            }
-            else
-            {
-                int aSelIndex=-1;
-                iCaller.OnSelectBtDevice(iDevList,aSelIndex);
-
-                if( aSelIndex >=0 ) //selected
-                {
-                 qDebug("aselindex %d",aSelIndex);
-                 StartSDPToSelectedDev(aSelIndex);
-                }
-                else //closed/cancelled
-                {
-                    emit EngineStateChangeSignal(EBtIdle);
-                    emit EngineStatusMessageSignal("Connect Cancelled");
-                }
-            }
-        }
-        break;
-    case PatienceBlueZEngine::EBtSearchingSDP:
-    {
-
-
-
-
-    }
-        break;
-
-    case PatienceBlueZEngine::EBtSearchingSDPDone:
-    {
-            if(iRFCOMMChannel<0) //not found
-            {
-                emit EngineStatusMessageSignal("mobile program not started");
-                //QMessageBox::information(iParentWindow, tr("program not started on phone"),tr("Can't find the mobile-side program running on selected mobile.\r\n\r\nPlease install/start the mobile program on your phone and try again."));
-                emit EngineErrorSignal(EServiceNotFoundOnDevice);
-                emit EngineStateChangeSignal(EBtIdle);
-            }
-            else
-            {
-                emit EngineStatusMessageSignal("channel found");
-
-                //start connect RFCOMM thread
-                //////////////
-                if(iThread && iThread->isRunning())
-                 {
-                iThread->wait();
-                 }
-
-                //if comes here measn thread has finished
-                delete iThread;
-
-                iThread = new CRFCOMMThread(*this);
-                iThread->start();
-                ////////////////
-
-            }
-    }
-    break;
-
-
-
-    case PatienceBlueZEngine::EBtConnectingRFCOMM:
-
-        break;
-    case PatienceBlueZEngine::EBtConnectionActive:
-
-        break;
-    case PatienceBlueZEngine::EBtDisconnected:
-        iLiveSocketToDisconnect = 0;
-        break;
-    default:
-
-        break;
-
-    }
-}
-
-/////////////////

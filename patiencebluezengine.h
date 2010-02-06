@@ -34,7 +34,9 @@
 #include <bluetooth/bluetooth.h>
 #include <bluetooth/rfcomm.h>
 
-class PatienceBlueZEngine : public PatienceBTClientEngine
+#include "patiencebtthreadedengine.h"
+
+class PatienceBlueZEngine : public PatienceBTThreadedEngine
 {
     Q_OBJECT
 
@@ -42,72 +44,14 @@ class PatienceBlueZEngine : public PatienceBTClientEngine
     PatienceBlueZEngine(MPatineceBTEngineCaller& aCaller, const uint8_t* aSvc_uuid_int);
     virtual ~PatienceBlueZEngine();
 
-    signals:
-    virtual void EngineStateChangeSignal(int aState);
-    virtual void EngineStatusMessageSignal(QString str);    
-    virtual void RFCOMMDataReceivedSignal(QByteArray ba);
-    virtual void EngineErrorSignal(int aError);
+        virtual void DoSearch();
+        virtual void DoSDP();
+        virtual void DoRFCOMM();
 
-    public slots:
-    void EngineStateChangeSlot(int aState); // to detect/handle our own state change made by bt operation threads
+        virtual void DoDisconnect();
 
-    public:
-
-    ///////////bt operation thread classes and functions
-
-        class CBtEngineThread : public QThread
-        {
-            public:
-            CBtEngineThread(PatienceBlueZEngine &aFather):iFather(aFather){}
-            PatienceBlueZEngine &iFather;
-        };
-
-        class CSearchThread : public CBtEngineThread
-        {
-         public:
-             CSearchThread(PatienceBlueZEngine &aFather):CBtEngineThread(aFather){}
-             void run();
-        };
-
-        class CSDPThread : public CBtEngineThread
-        {
-         public:
-             CSDPThread(PatienceBlueZEngine &aFather):CBtEngineThread(aFather){}
-             void run();
-        };
-
-        class CRFCOMMThread : public CBtEngineThread
-        {
-         public:
-             CRFCOMMThread(PatienceBlueZEngine &aFather):CBtEngineThread(aFather){}
-             void run();
-
-             struct sockaddr_rc addr;
+        struct sockaddr_rc addr;
              int s, status;
-        };
-
-
-        friend class CSearchThread;
-        friend class CSDPThread;
-
-        virtual void StartPrevdev(QByteArray& ba);
-        virtual bool StartSearch();
-        virtual void StartSDPToSelectedDev(int aSelIndex);
-        virtual void GetDevListClone(QList<TBtDevInfo>& aDevList);
-        virtual void Disconnect();
-    /////////////////
-
-private:
-
-    ////////////////////////for shared stuff between current and result thread like iDevlist
-    QThread* iThread;
-    QMutex iMutex;
-    QList<TBtDevInfo> iDevList;
-    int iRFCOMMChannel;
-    int iLiveSocketToDisconnect;
-    //////////////////////////////
-
-    int iSelectedIndex;    
 };
 
 #endif // PatienceBLUEZENGINE_H
